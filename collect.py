@@ -82,8 +82,6 @@ else:
                 except:
                     amt = 0
 
-                # [핵심 수정: 날짜 3중 방어막] 
-                # 메인날짜가 없거나 빈칸이면 ➔ 서브날짜 확인 ➔ 그것도 없으면 ➔ 오늘날짜 강제 부여
                 final_date = item.get('cntrctCnclsDate', '').strip() or item.get('cntrctDate', '').strip() or datetime.today().strftime('%Y-%m-%d')
 
                 fields = {
@@ -95,18 +93,31 @@ else:
                     "발주기관": item.get('cntrctInsttNm', '공공기관')
                 }
                 
-                payload = {"fields": fields}
-                airtable_response = requests.post(AIRTABLE_URL, headers=headers, json=payload)
+                # [핵심 보안: 중복 방지 시스템 가동]
+                # POST 대신 PATCH를 사용하고, performUpsert 옵션을 주어 3개 필드가 겹치면 중복으로 판정합니다.
+                payload = {
+                    "performUpsert": {
+                        "fieldsToMergeOn": ["계약명", "업체명", "계약일자"]
+                    },
+                    "records": [
+                        {
+                            "fields": fields
+                        }
+                    ]
+                }
+                
+                # 통신 방식을 requests.post에서 requests.patch로 변경
+                airtable_response = requests.patch(AIRTABLE_URL, headers=headers, json=payload)
                 
                 if airtable_response.status_code == 200:
                     success_count += 1
                 else:
-                    print(f"⚠️ 에어테이블 저장 실패 원인: {airtable_response.text}")
+                    print(f"⚠️ 에어테이블 처리 실패 원인: {airtable_response.text}")
 
             print("-" * 60)
             print(f"🏁 파이프라인 실행 종료!")
-            print(f"📦 필터링 및 날짜 예외 처리가 완비된 데이터 총 {success_count}건이 에어테이블에 이식되었습니다.")
+            print(f"📦 중복 제거 및 필터링이 완료된 데이터 총 {success_count}건이 처리되었습니다.")
             print("-" * 60)
 
     except json.JSONDecodeError:
-        print("❌ 정상 연결되었으나 데이터 구조 변환에 실패했습니다.")
+        print("❌ 데이터 구조 변환에 실패했습니다.")
