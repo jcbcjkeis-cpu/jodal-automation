@@ -1,9 +1,9 @@
-name: Weekly Jodal Data Pipeline
+name: Daily Jodal Data Pipeline
 
 on:
   schedule:
-    - cron: '0 0 * * 1'
-  workflow_dispatch:
+    - cron: '0 0 * * *' # 매일 오전 9시 (한국 시각) 자동 실행
+  workflow_dispatch:    # 수동 실행 버튼
 
 permissions:
   contents: write
@@ -22,7 +22,7 @@ jobs:
 
       - name: 필수 라이브러리 설치
         run: |
-          pip install requests pandas
+          pip install requests pandas openpyxl
 
       - name: 조달청 데이터 수집·정제 및 에어테이블 동기화 실행
         env:
@@ -34,6 +34,7 @@ jobs:
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
-          git add clean_contracts.csv
-          git diff --staged --quiet || git commit -m "Auto-update cleaned contracts CSV"
-          git push
+          if [ -f clean_contracts.csv ]; then
+            git add clean_contracts.csv
+            git diff --staged --quiet || (git commit -m "Auto-update cleaned contracts CSV" && git pull --rebase origin main && git push)
+          fi
