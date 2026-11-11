@@ -7,10 +7,10 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 # =================================================================
-# 1. 환경 설정 (새 에어테이블 주소 반영 완료)
+# 1. 환경 설정
 # =================================================================
-DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_KEY", "f1116ba156f900a07b00c69c8eef2a81f701a8901229d58034d89b3cab48eb81")
-AIRTABLE_PAT = os.environ.get("AIRTABLE_PAT", "").strip()
+DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_KEY", "f1116ba156f900a07b00c69c8eef2a81f701a8901229d58034d89b3cab48eb81").strip()
+AIRTABLE_PAT = os.environ.get("AIRTABLE_PAT", "patYy6iGFmqD0qLlY.8b706bc8107841a449678868788e05a647c455df70cf0ae9a1842d4c9fbf934f").strip()
 AIRTABLE_BASE_ID = "appuPX40djuy2emNF"
 AIRTABLE_TABLE_ID = "tblAfxWeOchBvwbha"
 
@@ -26,7 +26,7 @@ HEADERS = {
 }
 
 # =================================================================
-# 2. 데이터 정제 함수
+# 2. 데이터 정제 헬퍼 함수 (2자리 연도 및 공백 포함 날짜 완벽 호환)
 # =================================================================
 def clean_biz_no(raw_str):
     digits = re.sub(r'[^0-9]', '', str(raw_str))
@@ -48,17 +48,31 @@ def parse_corp_list(corp_list_str):
     return corp_name, ceo_name, biz_no
 
 def normalize_date(date_str):
-    s = str(date_str).strip()
-    if not s: return ""
-    s_clean = re.sub(r'[./]', '-', s)
+    """'26. 8. 10.', '2026.5.4', '2026-05-04' 등 모든 날짜 형식을 YYYY-MM-DD로 안전 변환"""
+    s = str(date_str).strip().rstrip('.')
+    if not s or s.lower() == 'nan':
+        return ""
+    s_clean = re.sub(r'[\.\s/]+', '-', s).strip('-')
+    parts = s_clean.split('-')
+    if len(parts) == 3:
+        y, m, d = parts[0], parts[1], parts[2]
+        if len(y) == 2:
+            y = "20" + y
+        try:
+            return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+        except:
+            pass
     try:
         dt = pd.to_datetime(s_clean, errors='coerce')
-        if pd.notna(dt): return dt.strftime('%Y-%m-%d')
-    except: pass
+        if pd.notna(dt):
+            return dt.strftime('%Y-%m-%d')
+    except:
+        pass
     return ""
 
 def is_valid_current_contract(norm_date, today_str):
-    if not norm_date: return False
+    if not norm_date:
+        return False
     return "2026-01-01" <= norm_date <= today_str
 
 def extract_region(inst_name):
@@ -152,97 +166,6 @@ for cat_name, api_url in DATA_URLS:
 print(f"✅ 조달청 신규 정제 데이터 {len(collected_map)}건 확보 완료.")
 
 # =================================================================
-# 4. 에어테이블 기존 창고 전수 검사 & 빈 줄/중복 자동 청소
+# 4. 에어테이블 기존 데이터 스캔 & 안전 정제 (날짜 파싱 실패 시 삭제 금지!)
 # =================================================================
-existing_records = []
-offset = None
-while True:
-    params = {"offset": offset} if offset else {}
-    res = requests.get(AIRTABLE_URL, headers=HEADERS, params=params)
-    if res.status_code != 200:
-        print(f"⚠️ 에어테이블 접근 확인 필요: {res.text}")
-        break
-    data = res.json()
-    existing_records.extend(data.get("records", []))
-    offset = data.get("offset")
-    if not offset: break
-
-seen_keys = {}
-delete_ids = []
-update_batch = []
-
-for r in existing_records:
-    rid = r["id"]
-    f = r.get("fields", {})
-    c_name = str(f.get("계약명", "")).strip()
-    comp_name = str(f.get("업체명", "")).strip()
-    raw_dt = str(f.get("계약일자", "")).strip()
-    norm_dt = normalize_date(raw_dt)
-    raw_biz = str(f.get("사업자번호", "")).strip()
-    clean_biz = clean_biz_no(raw_biz)
-    
-    # 테이블 생성 시 기본으로 들어있는 빈 행(1, 2, 3번 줄)이나 2026년 이전 데이터 자동 삭제
-    if not c_name or not norm_dt or norm_dt < "2026-01-01" or norm_dt > today_str:
-        delete_ids.append(rid); continue
-    key = (c_name, comp_name, norm_dt)
-    if key in seen_keys:
-        delete_ids.append(rid); continue
-    seen_keys[key] = rid
-    if raw_dt != norm_dt or raw_biz != clean_biz:
-        update_batch.append({"id": rid, "fields": {"계약일자": norm_dt, "사업자번호": clean_biz}})
-
-if delete_ids:
-    for i in range(0, len(delete_ids), 10):
-        requests.delete(AIRTABLE_URL, headers=HEADERS, params=[("records[]", x) for x in delete_ids[i:i+10]])
-        time.sleep(0.2)
-if update_batch:
-    for i in range(0, len(update_batch), 10):
-        requests.patch(AIRTABLE_URL, headers=HEADERS, json={"records": update_batch[i:i+10]})
-        time.sleep(0.2)
-
-# =================================================================
-# 5. 에어테이블에 신규 데이터 Upsert 동기화
-# =================================================================
-records_to_upsert = []
-for key, item_data in collected_map.items():
-    core_fields = {
-        "계약명": item_data["계약명"], "업체명": item_data["업체명"],
-        "사업자번호": item_data["사업자번호"], "계약금액": item_data["계약금액"],
-        "계약일자": item_data["계약일자"], "발주기관": item_data["발주기관"],
-        "비고": item_data["비고"]
-    }
-    records_to_upsert.append({"fields": core_fields})
-
-for i in range(0, len(records_to_upsert), 10):
-    batch = records_to_upsert[i:i+10]
-    res = requests.patch(AIRTABLE_URL, headers=HEADERS, json={
-        "performUpsert": {"fieldsToMergeOn": ["계약명", "업체명", "계약일자"]},
-        "records": batch
-    })
-    if res.status_code != 200 and "UNKNOWN_FIELD_NAME" in res.text:
-        fallback = [{"fields": {k: v for k, v in rec["fields"].items() if k != "비고"}} for rec in batch]
-        requests.patch(AIRTABLE_URL, headers=HEADERS, json={
-            "performUpsert": {"fieldsToMergeOn": ["계약명", "업체명", "계약일자"]},
-            "records": fallback
-        })
-    time.sleep(0.2)
-
-# =================================================================
-# 6. 크몽 판매용 마스터 CSV (clean_contracts.csv) 자동 생성 및 누적 저장
-# =================================================================
-csv_filename = "clean_contracts.csv"
-new_df = pd.DataFrame(list(collected_map.values()))
-try:
-    old_df = pd.read_csv(csv_filename)
-    combined_df = pd.concat([old_df, new_df], ignore_index=True)
-except FileNotFoundError:
-    combined_df = new_df
-
-if not combined_df.empty:
-    combined_df["계약일자"] = combined_df["계약일자"].apply(normalize_date)
-    combined_df["사업자번호"] = combined_df["사업자번호"].apply(clean_biz_no)
-    combined_df = combined_df[(combined_df["계약일자"] >= "2026-01-01") & (combined_df["계약일자"] <= today_str)]
-    combined_df = combined_df.drop_duplicates(subset=["계약명", "업체명", "계약일자"], keep="last")
-    combined_df = combined_df.sort_values(by=["계약일자", "계약금액"], ascending=[False, False]).reset_index(drop=True)
-    combined_df.to_csv(csv_filename, index=False, encoding="utf-8-sig")
-    print(f"💾 마스터 CSV({csv_filename}) 총 {len(combined_df)}건 저장 완료!")
+existing_records =
