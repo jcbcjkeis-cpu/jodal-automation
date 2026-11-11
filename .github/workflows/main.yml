@@ -2,10 +2,11 @@ name: Weekly Jodal Data Pipeline
 
 on:
   schedule:
-    # 매주 월요일 아침 9시(한국 시각 KST) 자동 가동 설정
-    # UTC 기준으로는 월요일 00시 00분입니다.
     - cron: '0 0 * * 1'
-  workflow_dispatch: # 필요할 때 수동으로 바로 실행할 수 있는 버튼 활성화
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -14,14 +15,25 @@ jobs:
       - name: 저장소 코드 가져오기
         uses: actions/checkout@v4
 
-      - name: 파이썬 세팅
+      - name: 파이썬 설치
         uses: actions/setup-python@v5
         with:
-          python-node-version: '3.12'
+          python-version: '3.12'
 
       - name: 필수 라이브러리 설치
         run: |
           pip install requests pandas
 
-      - name: 조달청 수집 및 에어테이블 이식 코드 실행
+      - name: 조달청 데이터 수집·정제 및 에어테이블 동기화 실행
+        env:
+          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
         run: python collect.py
+
+      - name: 정제된 마스터 CSV 파일 깃허브에 자동 저장
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add clean_contracts.csv
+          git diff --staged --quiet || git commit -m "Auto-update cleaned contracts CSV"
+          git push
